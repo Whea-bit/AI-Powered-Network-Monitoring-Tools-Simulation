@@ -1,9 +1,16 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import psutil
 from app.docker_monitor import get_containers
+from app.device_inventory import get_devices, add_device
 
 app = FastAPI()
+class Device (BaseModel):
+    name: str
+    vendor: str
+    ip: str
+    location: str
 
 @app.get("/")
 def root():
@@ -21,6 +28,14 @@ def system():
 @app.get("/docker")
 def docker_status():
     return get_containers()
+
+@app.get("/devices")
+def list_devices():
+    return get_devices()
+
+@app.post("/devices")
+def create_device(device: Device):
+    return add_device(device.dict())
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
@@ -49,8 +64,8 @@ def dashboard():
             }
 
             .grid {
-                display: grid;9
-                grip-template-column: repeat(auto-fit, minmax(250px, 1fr));
+                display: grid;
+                grip-template-columns: repeat(auto-fit, minmax(250px, 1fr));
                 gap: 20px;
                 margin-bottom: 25px;
             }
@@ -212,7 +227,7 @@ def dashboard():
                         <td id="packetsRecv">0</td>
                     </tr>
                 </table>
-            </dive>
+            </div>
 
             <div class="footer">
                 Auto-refresh every 3 seconds
@@ -221,8 +236,8 @@ def dashboard():
             <script>
 
                 function getColor(value) {
-                    if (value >= 80 return "red";
-                    if (value >= 60 return "yellow";
+                    if (value) >= 80 return "red";
+                    if (value) >= 60 return "yellow";
                     return "green";
                 }
 
@@ -254,7 +269,7 @@ def dashboard():
                     document.getElementById("cpuValue").innerText =
                         cpu.toFixed(1) + "%";
 
-                    document.getElemetById("memoryValue").innerText =
+                    document.getElementById("memoryValue").innerText =
                         memory.toFixed(1) + "%";
 
                     document.getElementById("diskValue").innerText =
@@ -274,23 +289,23 @@ def dashboard():
                        document.getElementById("memoryBar");
 
                    memoryBar.style.width = memory + "%";
-                   memoryBar.classmate =
+                   memoryBar.className =
                        "progress-bar" + getColor(memory);
 
                    const diskBar =
                        document.getElementById("diskBar");
 
                    diskBar.style.width = disk + "%";
-                   diskBar.classmate =
+                   diskBar.className =
                        "progress-bar " + getColor(disk);
 
                    document.getElementById("bytesSent").innerText =
                        system.network.bytes_sent.toLocaleString();
 
                    document.getElementById("bytesRecv").innerText =
-                       system.network.packets_sent.toLocaleString();
+                       system.network.bytes_recv.toLocaleString();
 
-                   document.getElemntById("packetRecv").innerText =
+                   document.getElemntById("packetsRecv").innerText =
                        system.network.packets_recv.toLocaleString();
 
                    const overall =
