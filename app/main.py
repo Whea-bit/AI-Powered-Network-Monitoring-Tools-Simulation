@@ -65,7 +65,7 @@ def dashboard():
 
             .grid {
                 display: grid;
-                grip-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
                 gap: 20px;
                 margin-bottom: 25px;
             }
@@ -236,8 +236,8 @@ def dashboard():
             <script>
 
                 function getColor(value) {
-                    if (value) >= 80 return "red";
-                    if (value) >= 60 return "yellow";
+                    if (value >= 80) return "red";
+                    if (value >= 60) return "yellow";
                     return "green";
                 }
 
@@ -290,7 +290,7 @@ def dashboard():
 
                    memoryBar.style.width = memory + "%";
                    memoryBar.className =
-                       "progress-bar" + getColor(memory);
+                       "progress-bar " + getColor(memory);
 
                    const diskBar =
                        document.getElementById("diskBar");
@@ -305,11 +305,13 @@ def dashboard():
                    document.getElementById("bytesRecv").innerText =
                        system.network.bytes_recv.toLocaleString();
 
-                   document.getElemntById("packetsRecv").innerText =
+                   document.getElementById("packetsSent").innerText =
+                       system.network.packets_sent.toLocaleString();
+
+                   document.getElementById("packetsRecv").innerText =
                        system.network.packets_recv.toLocaleString();
 
-                   const overall =
-                      getOverall(cpu, memory, disk);
+                   const overall = getOverall(cpu, memory, disk);
 
                    let statusColor = "green";
 
