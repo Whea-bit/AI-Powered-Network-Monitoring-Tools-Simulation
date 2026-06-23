@@ -13,4 +13,4 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
     except WebSocketDisconnect:
         # 3. Clean up safely if the user closes the browser tab
-        telemetry_engine.disconnect(websocket)
+        telemetry_engine.disconnect(websocket)  

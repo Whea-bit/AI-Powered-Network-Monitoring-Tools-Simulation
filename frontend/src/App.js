@@ -1,6 +1,8 @@
 import React from 'react';
 import { NetworkProvider } from './contexts/NetworkContext';
+import SummaryStrip from './components/SummaryStrip';
 import DeviceList from './components/DeviceList'; 
+import CliPanel from './components/CliPanel';
 
 function App() {
   return (
@@ -12,8 +14,9 @@ function App() {
             <p style={{ color: '#9ca3af', margin: '0.5rem 0 0 0' }}>Network Operations Center • Live Telemetry</p>
         </header>
         
-        {/* Here is your newly built component! */}
+        <SummaryStrip />
         <DeviceList />
+        <CliPanel />
         
       </div>
     </NetworkProvider>
