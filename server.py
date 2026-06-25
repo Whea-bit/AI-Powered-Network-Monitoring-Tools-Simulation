@@ -1,76 +1,51 @@
-"""
-AI-NOC Dashboard — Backend server (Phase 3).
-
-Run:
-    pip install fastapi "uvicorn[standard]"
-    uvicorn server:app --reload --host 0.0.0.0 --port 8000
-
-Then point your React frontend at http://localhost:8000.
-Interactive API docs are auto-generated at http://localhost:8000/docs
-
-Endpoints:
-    GET  /api/devices      -> list of all devices (your existing 5s poll)
-    GET  /api/devices/{id} -> one device
-    GET  /api/alerts       -> recent alerts feed
-    GET  /api/summary      -> KPI rollup for the Overview screen
-    POST /api/cli          -> run a CLI command, get text back
-    WS   /ws               -> live push of device state (no polling needed)
-    GET  /api/health       -> liveness check
-"""
+"""AI-NOC Dashboard — Backend server. Run: uvicorn server:app --reload --host 0.0.0.0 --port 8000"""
 
 import asyncio
 import contextlib
-from typing import List
+import json
+import urllib.request
+from typing import List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models import Device, Alert
 from collectors.simulator import SimulatorCollector
-# from collectors.snmp_collector import SnmpCollector, SnmpDevice
 from alerts import AlertEngine
 
-# ---- SWAP DATA SOURCE HERE (one line to go to real devices) ----
 collector = SimulatorCollector()
-# collector = SnmpCollector(devices=[
-#     SnmpDevice("core-sw-01", "Core-Switch-01", Vendor.CISCO, "10.0.0.1", "public"),
-# ])
 
 alert_engine = AlertEngine(
     cpu_threshold=85, mem_threshold=90,
-    webhook_url=None,  # <-- paste a Slack/Discord webhook URL to enable notifications
+    webhook_url=None,
 )
 
-POLL_INTERVAL = 5  # seconds — matches your frontend heartbeat
+POLL_INTERVAL = 5
+
+# --- PASTE YOUR CLAUDE API KEY HERE TO ENABLE AI ASSIST ---
+CLAUDE_API_KEY = None  # e.g. "sk-ant-api03-..."
 
 app = FastAPI(title="AI-NOC Dashboard API", version="1.0")
 
-# CORS: allow your React dev server. Add your deployed origin for production.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---- shared state, refreshed by the background poller ----
 _state: List[Device] = []
-_ws_clients: set[WebSocket] = set()
+_ws_clients: set = set()
 
 
 async def _poll_loop() -> None:
-    """Single background task polls the collector; everyone reads _state."""
     global _state
     await collector.startup()
     while True:
         try:
             _state = await collector.collect()
             alert_engine.evaluate(_state)
-            # push to any connected websocket clients
             dead = set()
             payload = [d.model_dump() for d in _state]
             for ws in _ws_clients:
@@ -155,10 +130,35 @@ def _dispatch_cli(cmd: str) -> str:
     head = parts[0].lower()
 
     if cmd == "show devices":
-        rows = [f"{d.name:<20} {d.ip:<14} {d.status.value:<10} "
-                f"CPU {d.cpu}%  {d.ports_up}/{d.ports_total} up"
+        rows = [f"{d.name:<22} {d.ip:<14} {d.status.value:<10} "
+                f"CPU {d.cpu:>5}%  MEM {d.memory:>5}%  {d.ports_up}/{d.ports_total} ports up"
                 for d in _state]
         return "\n".join(rows) or "no devices"
+
+    if cmd.startswith("show device "):
+        name = cmd[12:].strip().lower()
+        dev = next((d for d in _state if d.name.lower() == name or d.id.lower() == name), None)
+        if not dev:
+            return f"device '{name}' not found. try: show devices"
+        lines = [
+            f"Name:     {dev.name}",
+            f"Vendor:   {dev.vendor.value}",
+            f"IP:       {dev.ip}",
+            f"Status:   {dev.status.value}",
+            f"CPU:      {dev.cpu}%",
+            f"Memory:   {dev.memory}%",
+            f"Uptime:   {dev.uptime_seconds // 3600}h {(dev.uptime_seconds % 3600) // 60}m",
+            f"Ports:    {dev.ports_up}/{dev.ports_total} up",
+        ]
+        if dev.loops:
+            lines.append(f"Loops:    {len(dev.loops)} active")
+            for l in dev.loops:
+                lines.append(f"          └─ {l.port}: {l.detail}")
+        if dev.cable_faults:
+            lines.append(f"Faults:   {len(dev.cable_faults)} active")
+            for f in dev.cable_faults:
+                lines.append(f"          └─ {f.port}: {f.detail}")
+        return "\n".join(lines)
 
     if cmd == "show loops":
         out = [f"{d.name}: {l.port} — {l.detail}"
@@ -170,6 +170,19 @@ def _dispatch_cli(cmd: str) -> str:
                for d in _state for f in d.cable_faults]
         return "\n".join(out) or "no cable faults"
 
+    if cmd == "top":
+        lines = [
+            f"{'DEVICE':<22} {'STATUS':<10} {'CPU':>6} {'MEM':>6} {'LOOPS':>6} {'FAULTS':>7}",
+            "-" * 65,
+        ]
+        sorted_devs = sorted(_state, key=lambda d: d.cpu, reverse=True)
+        for d in sorted_devs:
+            lines.append(
+                f"{d.name:<22} {d.status.value:<10} {d.cpu:>5.1f}% {d.memory:>5.1f}% "
+                f"{len(d.loops):>5}  {len(d.cable_faults):>6}"
+            )
+        return "\n".join(lines)
+
     if head == "ping" and len(parts) > 1:
         ip = parts[1]
         dev = next((d for d in _state if d.ip == ip), None)
@@ -177,11 +190,119 @@ def _dispatch_cli(cmd: str) -> str:
             return f"Reply from {ip}: time<1ms  ({dev.name})"
         return f"Request timed out: {ip} unreachable"
 
+    if cmd == "show alerts":
+        if not alert_engine.alerts:
+            return "no alerts"
+        lines = []
+        for a in alert_engine.alerts[:20]:
+            lines.append(f"[{a.severity.upper():<8}] {a.message}  ({a.created_at[:19]})")
+        return "\n".join(lines)
+
     if cmd == "help":
-        return ("commands: show devices | show loops | show faults | "
-                "ping <ip> | help")
+        return (
+            "commands:\n"
+            "  show devices          — list all devices\n"
+            "  show device <name>    — detailed view of one device\n"
+            "  show loops            — active loop detections\n"
+            "  show faults           — active cable/RJ45 faults\n"
+            "  show alerts           — recent alert feed\n"
+            "  top                   — devices ranked by CPU usage\n"
+            "  ping <ip>             — test reachability\n"
+            "  ask <question>        — ask the AI assistant\n"
+            "  help                  — this message"
+        )
+
+    if head == "ask" and len(parts) > 1:
+        query = " ".join(parts[1:])
+        return _ask_ai(query)
 
     return f"unknown command: {cmd!r}  (try 'help')"
+
+
+def _ask_ai(query: str) -> str:
+    """Route a question to Claude with full network context."""
+    if not CLAUDE_API_KEY:
+        return "AI not configured. Set CLAUDE_API_KEY in server.py to enable."
+
+    snapshot = json.dumps([{
+        "name": d.name, "vendor": d.vendor.value, "ip": d.ip,
+        "status": d.status.value, "cpu": d.cpu, "memory": d.memory,
+        "loops": len(d.loops), "cable_faults": len(d.cable_faults),
+    } for d in _state], indent=2)
+
+    payload = json.dumps({
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 500,
+        "system": (
+            "You are an expert network operations center AI. You have live "
+            "telemetry data from monitored devices. Be concise and technical. "
+            "Here is the current network state:\n" + snapshot
+        ),
+        "messages": [{"role": "user", "content": query}],
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": CLAUDE_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            return data["content"][0]["text"]
+    except Exception as e:
+        return f"AI error: {e}"
+
+
+# ----------------------------- AI ASSIST --------------------------
+class AiAssistRequest(BaseModel):
+    messages: list
+    network_context: Optional[str] = ""
+
+
+@app.post("/api/ai-assist")
+async def ai_assist(req: AiAssistRequest):
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=503, detail="AI not configured. Set CLAUDE_API_KEY in server.py.")
+
+    system_prompt = (
+        "You are an expert NOC AI assistant. You analyze live network telemetry "
+        "and provide concise, technical recommendations. The operator will ask "
+        "about device health, troubleshooting, and optimization.\n\n"
+        "Current network state:\n" + req.network_context
+    )
+
+    api_messages = []
+    for msg in req.messages:
+        if msg.get("role") in ("user", "assistant"):
+            api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+    payload = json.dumps({
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 800,
+        "system": system_prompt,
+        "messages": api_messages,
+    }).encode()
+
+    try:
+        api_req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": CLAUDE_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        with urllib.request.urlopen(api_req, timeout=20) as resp:
+            data = json.loads(resp.read())
+            return {"response": data["content"][0]["text"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI error: {e}")
 
 
 # --------------------------- WebSocket --------------------------
@@ -189,11 +310,10 @@ def _dispatch_cli(cmd: str) -> str:
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     _ws_clients.add(ws)
-    # send current state immediately on connect
     await ws.send_json({"type": "devices",
                         "data": [d.model_dump() for d in _state]})
     try:
         while True:
-            await ws.receive_text()  # keepalive / ignore client msgs
+            await ws.receive_text()
     except WebSocketDisconnect:
         _ws_clients.discard(ws)

@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNetwork } from '../contexts/NetworkContext';
 
 const DeviceList = () => {
     const { devices, loading, lastUpdated } = useNetwork();
+    const [expanded, setExpanded] = useState(null);
 
     if (loading) {
         return <div style={{ color: '#9ca3af', marginTop: '2rem' }}>Loading network telemetry...</div>;
@@ -26,10 +27,10 @@ const DeviceList = () => {
                     {devices.map((device) => {
                         const isOnline = device.status === 'ONLINE';
                         const isDegraded = device.status === 'DEGRADED';
-                        // border: green online, amber degraded, red offline
                         const borderColor = isOnline ? '#22c55e' : isDegraded ? '#fbbf24' : '#ef4444';
                         const badgeBg = isOnline ? 'rgba(34, 197, 94, 0.1)' : isDegraded ? 'rgba(251, 191, 36, 0.1)' : 'rgba(239, 68, 68, 0.1)';
                         const badgeColor = isOnline ? '#4ade80' : isDegraded ? '#fbbf24' : '#f87171';
+                        const isExpanded = expanded === device.id;
 
                         return (
                             <div key={device.id} style={{
@@ -37,22 +38,21 @@ const DeviceList = () => {
                                 padding: '1.5rem',
                                 borderRadius: '0.5rem',
                                 borderTop: `4px solid ${borderColor}`,
-                                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-                            }}>
-
+                                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                                cursor: 'pointer',
+                                transition: 'box-shadow 0.2s'
+                            }}
+                            onClick={() => setExpanded(isExpanded ? null : device.id)}
+                            >
                                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
                                     <div>
                                         <h3 style={{ margin: 0, color: '#f9fafb', fontSize: '1.25rem' }}>{device.name}</h3>
                                         <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>{device.vendor} • {device.ip}</span>
                                     </div>
                                     <span style={{
-                                        backgroundColor: badgeBg,
-                                        color: badgeColor,
-                                        padding: '0.25rem 0.75rem',
-                                        borderRadius: '9999px',
-                                        fontSize: '0.875rem',
-                                        fontWeight: 'bold',
-                                        height: 'fit-content'
+                                        backgroundColor: badgeBg, color: badgeColor,
+                                        padding: '0.25rem 0.75rem', borderRadius: '9999px',
+                                        fontSize: '0.875rem', fontWeight: 'bold', height: 'fit-content'
                                     }}>
                                         {device.status}
                                     </span>
@@ -73,7 +73,7 @@ const DeviceList = () => {
                                     </div>
                                 </div>
 
-                                {/* --- FAULT BADGES: loops + RJ45/cable faults --- */}
+                                {/* Fault badges */}
                                 {(device.loops?.length > 0 || device.cable_faults?.length > 0) && (
                                     <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #374151' }}>
                                         {device.loops?.map((loop, idx) => (
@@ -100,6 +100,42 @@ const DeviceList = () => {
                                         ))}
                                     </div>
                                 )}
+
+                                {/* Port map — shown when card is clicked */}
+                                {isExpanded && device.ports && device.ports.length > 0 && (
+                                    <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #374151' }}>
+                                        <div style={{ color: '#9ca3af', fontSize: '0.75rem', marginBottom: '0.5rem' }}>
+                                            Port Map — {device.ports.filter(p => p.state === 'up').length}/{device.ports.length} up
+                                        </div>
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                            {device.ports.map((port, idx) => {
+                                                const portColor = port.state === 'up' ? '#22c55e'
+                                                    : port.state === 'fault' ? '#ef4444'
+                                                    : '#4b5563';
+                                                return (
+                                                    <div key={idx} title={`${port.name} — ${port.state} (${port.utilization}%)`} style={{
+                                                        width: '18px', height: '18px',
+                                                        backgroundColor: portColor,
+                                                        borderRadius: '3px',
+                                                        opacity: port.state === 'down' ? 0.4 : 1,
+                                                        cursor: 'default',
+                                                        position: 'relative'
+                                                    }} />
+                                                );
+                                            })}
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem', fontSize: '0.7rem', color: '#6b7280' }}>
+                                            <span><span style={{ color: '#22c55e' }}>■</span> Up</span>
+                                            <span><span style={{ color: '#4b5563', opacity: 0.4 }}>■</span> Down</span>
+                                            <span><span style={{ color: '#ef4444' }}>■</span> Fault</span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Expand hint */}
+                                <div style={{ textAlign: 'center', color: '#4b5563', fontSize: '0.7rem', marginTop: '0.75rem' }}>
+                                    {isExpanded ? '▲ click to collapse' : '▼ click for port map'}
+                                </div>
                             </div>
                         );
                     })}
