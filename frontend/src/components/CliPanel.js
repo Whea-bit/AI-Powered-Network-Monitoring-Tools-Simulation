@@ -8,7 +8,7 @@ const CliPanel = () => {
     const [input, setInput] = useState('');
     const [cmdHistory, setCmdHistory] = useState([]);
     const [histIndex, setHistIndex] = useState(-1);
-    const [loading, setLoading] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
     const scrollRef = useRef(null);
 
     useEffect(() => {
@@ -19,7 +19,7 @@ const CliPanel = () => {
 
     const runCommand = async () => {
         const cmd = input.trim();
-        if (!cmd || loading) return;
+        if (!cmd || isLoading) return;
 
         setHistory((h) => [...h, { type: 'input', text: cmd }]);
         setCmdHistory((c) => [...c, cmd]);
@@ -31,14 +31,14 @@ const CliPanel = () => {
             return;
         }
 
-        setLoading(true);
+        setIsLoading(true);
         try {
             const res = await axios.post('http://localhost:8000/api/cli', { command: cmd });
             setHistory((h) => [...h, { type: 'output', text: res.data.output }]);
         } catch (err) {
-            setHistory((h) => [...h, { type: 'error', text: 'Error: could not reach backend.' }]);
+            setHistory((h) => [...h, { type: 'error', text: 'Error: could not reach backend. Make sure uvicorn is running.' }]);
         }
-        setLoading(false);
+        setIsLoading(false);
     };
 
     const handleKey = (e) => {
@@ -73,42 +73,86 @@ const CliPanel = () => {
 
     return (
         <div style={{ marginTop: '1rem' }}>
-            <h2 style={{ fontSize: '1.5rem', color: '#f3f4f6', marginBottom: '1rem' }}>Centralized CLI</h2>
+            <h2 style={{ fontSize: '1.5rem', color: '#f3f4f6', marginBottom: '1rem' }}>
+                Centralized CLI
+            </h2>
             <div style={{
-                backgroundColor: '#0d1117', border: '1px solid #374151',
-                borderRadius: '0.5rem', overflow: 'hidden', fontFamily: 'monospace'
+                backgroundColor: '#0d1117',
+                border: '1px solid #374151',
+                borderRadius: '0.5rem',
+                overflow: 'hidden',
+                fontFamily: 'monospace'
             }}>
+                {/* Output area */}
                 <div ref={scrollRef} style={{
-                    height: '360px', overflowY: 'auto', padding: '1rem',
-                    fontSize: '0.875rem', lineHeight: '1.5'
+                    height: '360px',
+                    overflowY: 'auto',
+                    padding: '1rem',
+                    fontSize: '0.875rem',
+                    lineHeight: '1.6'
                 }}>
                     {history.map((line, idx) => (
-                        <div key={idx} style={{ color: colorFor(line.type), whiteSpace: 'pre-wrap', marginBottom: '0.25rem' }}>
+                        <div key={idx} style={{
+                            color: colorFor(line.type),
+                            whiteSpace: 'pre-wrap',
+                            marginBottom: '0.25rem'
+                        }}>
                             {line.type === 'input' ? `noc> ${line.text}` : line.text}
                         </div>
                     ))}
-                    {loading && (
-                        <div style={{ color: '#9ca3af', fontStyle: 'italic' }}>processing...</div>
+                    {isLoading && (
+                        <div style={{ color: '#9ca3af', fontStyle: 'italic' }}>
+                            processing...
+                        </div>
                     )}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', borderTop: '1px solid #374151', padding: '0.5rem 1rem' }}>
-                    <span style={{ color: '#4ade80', marginRight: '0.5rem', fontFamily: 'monospace' }}>noc&gt;</span>
+
+                {/* Input row */}
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    borderTop: '1px solid #374151',
+                    padding: '0.5rem 1rem',
+                    gap: '0.5rem'
+                }}>
+                    <span style={{ color: '#4ade80', fontFamily: 'monospace' }}>noc&gt;</span>
                     <input
+                        id="cli-input"
+                        name="cli-input"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKey}
                         placeholder="type a command and press Enter..."
-                        disabled={loading}
+                        disabled={isLoading}
+                        autoComplete="off"
                         style={{
-                            flex: 1, backgroundColor: 'transparent', border: 'none',
-                            outline: 'none', color: '#f3f4f6', fontFamily: 'monospace', fontSize: '0.875rem'
+                            flex: 1,
+                            backgroundColor: 'transparent',
+                            border: 'none',
+                            outline: 'none',
+                            color: '#f3f4f6',
+                            fontFamily: 'monospace',
+                            fontSize: '0.875rem',
+                            cursor: isLoading ? 'wait' : 'text'
                         }}
                         autoFocus
                     />
                 </div>
             </div>
+
+            {/* Command hint bar */}
             <div style={{ color: '#6b7280', fontSize: '0.75rem', marginTop: '0.5rem' }}>
-                Commands: show devices · show device &lt;name&gt; · show loops · show faults · show alerts · top · ping &lt;ip&gt; · ask &lt;question&gt; · help · clear
+                Commands: &nbsp;
+                <code style={{ color: '#9ca3af' }}>show devices</code> ·
+                <code style={{ color: '#9ca3af' }}> show device &lt;name&gt;</code> ·
+                <code style={{ color: '#9ca3af' }}> show loops</code> ·
+                <code style={{ color: '#9ca3af' }}> show faults</code> ·
+                <code style={{ color: '#9ca3af' }}> show alerts</code> ·
+                <code style={{ color: '#9ca3af' }}> top</code> ·
+                <code style={{ color: '#9ca3af' }}> ping &lt;ip&gt;</code> ·
+                <code style={{ color: '#9ca3af' }}> ask &lt;question&gt;</code> ·
+                <code style={{ color: '#9ca3af' }}> clear</code> ·
+                <code style={{ color: '#9ca3af' }}> help</code>
             </div>
         </div>
     );

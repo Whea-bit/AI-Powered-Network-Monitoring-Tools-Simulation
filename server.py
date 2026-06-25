@@ -1,4 +1,4 @@
-"""AI-NOC Dashboard — Backend server. Run: uvicorn server:app --reload --host 0.0.0.0 --port 8000"""
+"""AI-NOC Dashboard — Backend server with Gemini AI. Run: uvicorn server:app --reload --host 0.0.0.0 --port 8000"""
 
 import asyncio
 import contextlib
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from models import Device, Alert
 from collectors.simulator import SimulatorCollector
 from alerts import AlertEngine
+from collectors.icmp_collector import ping_host_async, ping_all_devices, format_ping_output
 
 collector = SimulatorCollector()
 
@@ -22,8 +23,9 @@ alert_engine = AlertEngine(
 
 POLL_INTERVAL = 5
 
-# --- PASTE YOUR CLAUDE API KEY HERE TO ENABLE AI ASSIST ---
-CLAUDE_API_KEY = None  # e.g. "sk-ant-api03-..."
+# --- PASTE YOUR GEMINI API KEY HERE ---
+GEMINI_API_KEY = "AQ.Ab8RN6LfAH-bMyxltuLjoEvK1yfzl6Ikxwt0DmNZg_rZL79obA"  
+GEMINI_MODEL = "gemini-2.0-flash"
 
 app = FastAPI(title="AI-NOC Dashboard API", version="1.0")
 
@@ -39,6 +41,60 @@ _state: List[Device] = []
 _ws_clients: set = set()
 
 
+def _call_gemini(system_prompt: str, messages: list) -> str:
+    """Call Google Gemini API and return the text response."""
+    if not GEMINI_API_KEY:
+        return "AI not configured. Set GEMINI_API_KEY in server.py to enable."
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+
+    # Convert messages to Gemini format
+    contents = []
+    for msg in messages:
+        role = "user" if msg.get("role") == "user" else "model"
+        contents.append({
+            "role": role,
+            "parts": [{"text": msg["content"]}]
+        })
+
+    payload = json.dumps({
+        "systemInstruction": {
+            "parts": [{"text": system_prompt}]
+        },
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": 800,
+            "temperature": 0.7
+        }
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        return f"Gemini API error ({e.code}): {error_body[:200]}"
+    except Exception as e:
+        return f"AI error: {e}"
+
+
+def _get_network_snapshot() -> str:
+    """Serialize current device state for AI context."""
+    return json.dumps([{
+        "name": d.name, "vendor": d.vendor.value, "ip": d.ip,
+        "status": d.status.value, "cpu": d.cpu, "memory": d.memory,
+        "loops": len(d.loops), "cable_faults": len(d.cable_faults),
+        "ports_up": d.ports_up, "ports_total": d.ports_total,
+    } for d in _state], indent=2)
+
+
+# ----------------------------- Poll loop -----------------------------
 async def _poll_loop() -> None:
     global _state
     await collector.startup()
@@ -185,10 +241,21 @@ def _dispatch_cli(cmd: str) -> str:
 
     if head == "ping" and len(parts) > 1:
         ip = parts[1]
-        dev = next((d for d in _state if d.ip == ip), None)
-        if dev and dev.status.value != "OFFLINE":
-            return f"Reply from {ip}: time<1ms  ({dev.name})"
-        return f"Request timed out: {ip} unreachable"
+        # resolve name to IP if a device name was typed instead of an IP
+        if not ip[0].isdigit():
+            dev = next((d for d in _state if d.name.lower() == ip.lower()), None)
+            if dev:
+                ip = dev.ip
+        else:
+            return f"unknown host: {ip!r}"
+    # real ICMP ping
+    import asyncio
+    result = asyncio.get_event_loop().run_until_complete(
+        ping_host_async(ip, count=3, timeout=1.0)
+    ) if asyncio.get_event_loop().is_running() else ping_host(ip)
+    dev = next((d for d in _state if d.ip == ip), None)
+    name_hint = f"  ({dev.name})" if dev else ""
+    return format_ping_output(result) + name_hint
 
     if cmd == "show alerts":
         if not alert_engine.alerts:
@@ -214,48 +281,13 @@ def _dispatch_cli(cmd: str) -> str:
 
     if head == "ask" and len(parts) > 1:
         query = " ".join(parts[1:])
-        return _ask_ai(query)
+        system = (
+            "You are an expert network operations center AI. Be concise and technical. "
+            "Here is the current network state:\n" + _get_network_snapshot()
+        )
+        return _call_gemini(system, [{"role": "user", "content": query}])
 
     return f"unknown command: {cmd!r}  (try 'help')"
-
-
-def _ask_ai(query: str) -> str:
-    """Route a question to Claude with full network context."""
-    if not CLAUDE_API_KEY:
-        return "AI not configured. Set CLAUDE_API_KEY in server.py to enable."
-
-    snapshot = json.dumps([{
-        "name": d.name, "vendor": d.vendor.value, "ip": d.ip,
-        "status": d.status.value, "cpu": d.cpu, "memory": d.memory,
-        "loops": len(d.loops), "cable_faults": len(d.cable_faults),
-    } for d in _state], indent=2)
-
-    payload = json.dumps({
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 500,
-        "system": (
-            "You are an expert network operations center AI. You have live "
-            "telemetry data from monitored devices. Be concise and technical. "
-            "Here is the current network state:\n" + snapshot
-        ),
-        "messages": [{"role": "user", "content": query}],
-    }).encode()
-
-    try:
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": CLAUDE_API_KEY,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-            return data["content"][0]["text"]
-    except Exception as e:
-        return f"AI error: {e}"
 
 
 # ----------------------------- AI ASSIST --------------------------
@@ -263,49 +295,52 @@ class AiAssistRequest(BaseModel):
     messages: list
     network_context: Optional[str] = ""
 
-
 @app.post("/api/ai-assist")
-async def ai_assist(req: AiAssistRequest):
-    if not CLAUDE_API_KEY:
-        raise HTTPException(status_code=503, detail="AI not configured. Set CLAUDE_API_KEY in server.py.")
+async def ai_assist(req: dict):
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=503, detail="AI not configured. Set GEMINI_API_KEY.")
 
+    # 1. Safely extract the network context
+    network_context = req.get("network_context", "")
     system_prompt = (
-        "You are an expert NOC AI assistant. You analyze live network telemetry "
-        "and provide concise, technical recommendations. The operator will ask "
-        "about device health, troubleshooting, and optimization.\n\n"
-        "Current network state:\n" + req.network_context
+        "You are an expert NOC AI assistant. Provide concise, technical troubleshooting advice. "
+        "Current network state:\n" + str(network_context)
     )
-
+    
+    # 2. Bulletproof message extraction (Handles both old and new frontend code)
     api_messages = []
-    for msg in req.messages:
-        if msg.get("role") in ("user", "assistant"):
-            api_messages.append({"role": msg["role"], "content": msg["content"]})
+    
+    # Check if frontend sent a list of 'messages'
+    if "messages" in req and isinstance(req["messages"], list):
+        for msg in req["messages"]:
+            if isinstance(msg, dict):
+                # Map roles correctly
+                role = "user" if msg.get("role") in ["user", "YOU"] else "model"
+                content = str(msg.get("content", "")).strip()
+                if content:  # Google rejects empty strings
+                    api_messages.append({"role": role, "content": content})
+                    
+    # Check if frontend sent a single 'message' instead
+    elif "message" in req:
+        content = str(req["message"]).strip()
+        if content:
+            api_messages.append({"role": "user", "content": content})
 
-    payload = json.dumps({
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 800,
-        "system": system_prompt,
-        "messages": api_messages,
-    }).encode()
+    # 3. Failsafe: Prevent the "400 Empty Contents" error
+    if not api_messages:
+        return {"response": "System Error: The backend received an empty message from the dashboard."}
 
-    try:
-        api_req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": CLAUDE_API_KEY,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-        with urllib.request.urlopen(api_req, timeout=20) as resp:
-            data = json.loads(resp.read())
-            return {"response": data["content"][0]["text"]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI error: {e}")
+    # 4. Google's Strict Rule: The conversation MUST start with a 'user'
+    if api_messages[0]["role"] == "model":
+        # Prepend a hidden initialization message to keep the API happy
+        api_messages.insert(0, {"role": "user", "content": "Initialize network analysis."})
+
+    # Call Gemini
+    result = _call_gemini(system_prompt, api_messages)
+    return {"response": result}
 
 
-# --------------------------- WebSocket --------------------------
+# ----------------------------- WebSocket --------------------------
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()

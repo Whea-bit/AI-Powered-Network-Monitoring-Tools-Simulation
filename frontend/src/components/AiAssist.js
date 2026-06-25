@@ -27,23 +27,18 @@ const AiAssist = () => {
         setInput('');
         setLoading(true);
 
-        const networkSnapshot = JSON.stringify(devices.map(d => ({
-            name: d.name, vendor: d.vendor, ip: d.ip, status: d.status,
-            cpu: d.cpu, memory: d.memory,
-            loops: d.loops?.length || 0,
-            cable_faults: d.cable_faults?.length || 0
-        })));
-
         try {
+            // Updated to talk to your local Gemini-ready FastAPI backend
             const res = await axios.post('http://localhost:8000/api/ai-assist', {
-                messages: updatedMessages.map(m => ({ role: m.role, content: m.content })),
-                network_context: networkSnapshot
+                message: text
             });
+
             setMessages([...updatedMessages, { role: 'assistant', content: res.data.response }]);
         } catch (err) {
-            setMessages([...updatedMessages, {
-                role: 'assistant',
-                content: 'AI service unavailable. To enable: add your Claude API key to the backend. The endpoint /api/ai-assist needs to be configured in server.py.'
+            console.error("Backend error:", err);
+            setMessages([...updatedMessages, { 
+                role: 'assistant', 
+                content: 'Error: Could not connect to the AI network assistant. Please ensure your backend server is running.' 
             }]);
         }
         setLoading(false);
@@ -94,6 +89,7 @@ const AiAssist = () => {
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                        name="ai-input"
                         placeholder="Ask about your network..."
                         style={{
                             flex: 1, backgroundColor: 'transparent', border: 'none',
