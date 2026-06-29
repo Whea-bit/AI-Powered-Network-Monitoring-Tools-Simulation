@@ -1,9 +1,12 @@
-"""AI-NOC Dashboard — Backend server with Gemini AI. Run: uvicorn server:app --reload --host 0.0.0.0 --port 8000"""
+"""AI-NOC Dashboard — Backend server with Gemini AI + real ICMP ping.
+Run: uvicorn server:app --reload --host 0.0.0.0 --port 8000
+"""
 
 import asyncio
 import contextlib
 import json
 import urllib.request
+import urllib.error
 from typing import List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,21 +15,24 @@ from pydantic import BaseModel
 from models import Device, Alert
 from collectors.simulator import SimulatorCollector
 from alerts import AlertEngine
-from collectors.icmp_collector import ping_host_async, ping_all_devices, format_ping_output
+from collectors.icmp_collector import ping_host_async, format_ping_output
 
+# ----------------------------- Config -----------------------------
 collector = SimulatorCollector()
 
 alert_engine = AlertEngine(
-    cpu_threshold=85, mem_threshold=90,
+    cpu_threshold=85,
+    mem_threshold=90,
     webhook_url=None,
 )
 
 POLL_INTERVAL = 5
 
-# --- PASTE YOUR GEMINI API KEY HERE ---
-GEMINI_API_KEY = "AQ.Ab8RN6LfAH-bMyxltuLjoEvK1yfzl6Ikxwt0DmNZg_rZL79obA"  
-GEMINI_MODEL = "gemini-2.0-flash"
+# --- PASTE YOUR NEW GEMINI API KEY HERE AFTER REGENERATING IT ---
+GEMINI_API_KEY = ""
+GEMINI_MODEL = "gemini-1.5-flash"  # more generous free quota than 2.0-flash
 
+# ----------------------------- App setup -------------------------
 app = FastAPI(title="AI-NOC Dashboard API", version="1.0")
 
 app.add_middleware(
@@ -41,21 +47,37 @@ _state: List[Device] = []
 _ws_clients: set = set()
 
 
+# ----------------------------- Gemini AI -------------------------
 def _call_gemini(system_prompt: str, messages: list) -> str:
     """Call Google Gemini API and return the text response."""
     if not GEMINI_API_KEY:
-        return "AI not configured. Set GEMINI_API_KEY in server.py to enable."
+        return "AI not configured. Paste your Gemini API key into GEMINI_API_KEY in server.py."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    )
 
     # Convert messages to Gemini format
     contents = []
     for msg in messages:
         role = "user" if msg.get("role") == "user" else "model"
-        contents.append({
-            "role": role,
-            "parts": [{"text": msg["content"]}]
+        content = str(msg.get("content", "")).strip()
+        if content:
+            contents.append({
+                "role": role,
+                "parts": [{"text": content}]
+            })
+
+    # Gemini requires conversation to start with a user message
+    if contents and contents[0]["role"] == "model":
+        contents.insert(0, {
+            "role": "user",
+            "parts": [{"text": "Initialize network analysis."}]
         })
+
+    if not contents:
+        return "Error: no message content to send."
 
     payload = json.dumps({
         "systemInstruction": {
@@ -79,7 +101,7 @@ def _call_gemini(system_prompt: str, messages: list) -> str:
             return data["candidates"][0]["content"]["parts"][0]["text"]
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
-        return f"Gemini API error ({e.code}): {error_body[:200]}"
+        return f"Gemini API error ({e.code}): {error_body[:300]}"
     except Exception as e:
         return f"AI error: {e}"
 
@@ -87,14 +109,20 @@ def _call_gemini(system_prompt: str, messages: list) -> str:
 def _get_network_snapshot() -> str:
     """Serialize current device state for AI context."""
     return json.dumps([{
-        "name": d.name, "vendor": d.vendor.value, "ip": d.ip,
-        "status": d.status.value, "cpu": d.cpu, "memory": d.memory,
-        "loops": len(d.loops), "cable_faults": len(d.cable_faults),
-        "ports_up": d.ports_up, "ports_total": d.ports_total,
+        "name": d.name,
+        "vendor": d.vendor.value,
+        "ip": d.ip,
+        "status": d.status.value,
+        "cpu": d.cpu,
+        "memory": d.memory,
+        "loops": len(d.loops),
+        "cable_faults": len(d.cable_faults),
+        "ports_up": d.ports_up,
+        "ports_total": d.ports_total,
     } for d in _state], indent=2)
 
 
-# ----------------------------- Poll loop -----------------------------
+# ----------------------------- Poll loop -------------------------
 async def _poll_loop() -> None:
     global _state
     await collector.startup()
@@ -128,10 +156,15 @@ async def _shutdown() -> None:
     await collector.shutdown()
 
 
-# ----------------------------- REST -----------------------------
+# ----------------------------- REST endpoints --------------------
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "source": collector.name, "devices": len(_state)}
+    return {
+        "status": "ok",
+        "source": collector.name,
+        "devices": len(_state),
+        "ai": "configured" if GEMINI_API_KEY else "not configured",
+    }
 
 
 @app.get("/api/devices", response_model=List[Device])
@@ -162,11 +195,22 @@ async def get_summary():
     cable = sum(len(d.cable_faults) for d in _state)
     avg_cpu = round(sum(d.cpu for d in _state) / total, 1) if total else 0
     return {
-        "total": total, "online": online, "offline": offline,
-        "degraded": degraded, "loops": loops, "cable_faults": cable,
+        "total": total,
+        "online": online,
+        "offline": offline,
+        "degraded": degraded,
+        "loops": loops,
+        "cable_faults": cable,
         "avg_cpu": avg_cpu,
         "open_alerts": sum(1 for a in alert_engine.alerts if not a.acknowledged),
     }
+
+
+@app.get("/api/ping/{ip}")
+async def ping_endpoint(ip: str):
+    """Real ICMP ping — callable directly from the frontend."""
+    result = await ping_host_async(ip, count=3, timeout=1.0)
+    return result
 
 
 # ----------------------------- CLI ------------------------------
@@ -176,24 +220,31 @@ class CliCommand(BaseModel):
 
 @app.post("/api/cli")
 async def run_cli(cmd: CliCommand):
-    return {"output": _dispatch_cli(cmd.command.strip())}
+    return {"output": await _dispatch_cli(cmd.command.strip())}
 
 
-def _dispatch_cli(cmd: str) -> str:
+async def _dispatch_cli(cmd: str) -> str:
     parts = cmd.split()
     if not parts:
         return ""
     head = parts[0].lower()
 
+    # show devices
     if cmd == "show devices":
-        rows = [f"{d.name:<22} {d.ip:<14} {d.status.value:<10} "
-                f"CPU {d.cpu:>5}%  MEM {d.memory:>5}%  {d.ports_up}/{d.ports_total} ports up"
-                for d in _state]
+        rows = [
+            f"{d.name:<22} {d.ip:<14} {d.status.value:<10} "
+            f"CPU {d.cpu:>5}%  MEM {d.memory:>5}%  {d.ports_up}/{d.ports_total} ports up"
+            for d in _state
+        ]
         return "\n".join(rows) or "no devices"
 
+    # show device <name>
     if cmd.startswith("show device "):
         name = cmd[12:].strip().lower()
-        dev = next((d for d in _state if d.name.lower() == name or d.id.lower() == name), None)
+        dev = next(
+            (d for d in _state if d.name.lower() == name or d.id.lower() == name),
+            None
+        )
         if not dev:
             return f"device '{name}' not found. try: show devices"
         lines = [
@@ -203,7 +254,8 @@ def _dispatch_cli(cmd: str) -> str:
             f"Status:   {dev.status.value}",
             f"CPU:      {dev.cpu}%",
             f"Memory:   {dev.memory}%",
-            f"Uptime:   {dev.uptime_seconds // 3600}h {(dev.uptime_seconds % 3600) // 60}m",
+            f"Uptime:   {dev.uptime_seconds // 3600}h "
+            f"{(dev.uptime_seconds % 3600) // 60}m",
             f"Ports:    {dev.ports_up}/{dev.ports_total} up",
         ]
         if dev.loops:
@@ -216,55 +268,72 @@ def _dispatch_cli(cmd: str) -> str:
                 lines.append(f"          └─ {f.port}: {f.detail}")
         return "\n".join(lines)
 
+    # show loops
     if cmd == "show loops":
         out = [f"{d.name}: {l.port} — {l.detail}"
                for d in _state for l in d.loops]
         return "\n".join(out) or "no loops detected"
 
+    # show faults
     if cmd == "show faults":
         out = [f"{d.name}: {f.port} — {f.detail}"
                for d in _state for f in d.cable_faults]
         return "\n".join(out) or "no cable faults"
 
-    if cmd == "top":
-        lines = [
-            f"{'DEVICE':<22} {'STATUS':<10} {'CPU':>6} {'MEM':>6} {'LOOPS':>6} {'FAULTS':>7}",
-            "-" * 65,
-        ]
-        sorted_devs = sorted(_state, key=lambda d: d.cpu, reverse=True)
-        for d in sorted_devs:
+    # show alerts
+    if cmd == "show alerts":
+        if not alert_engine.alerts:
+            return "no alerts recorded yet"
+        lines = []
+        for a in alert_engine.alerts[:20]:
             lines.append(
-                f"{d.name:<22} {d.status.value:<10} {d.cpu:>5.1f}% {d.memory:>5.1f}% "
-                f"{len(d.loops):>5}  {len(d.cable_faults):>6}"
+                f"[{a.severity.upper():<8}] {a.message}  ({a.created_at[:19]})"
             )
         return "\n".join(lines)
 
-    if head == "ping" and len(parts) > 1:
-        ip = parts[1]
-        # resolve name to IP if a device name was typed instead of an IP
-        if not ip[0].isdigit():
-            dev = next((d for d in _state if d.name.lower() == ip.lower()), None)
-            if dev:
-                ip = dev.ip
-        else:
-            return f"unknown host: {ip!r}"
-    # real ICMP ping
-    import asyncio
-    result = asyncio.get_event_loop().run_until_complete(
-        ping_host_async(ip, count=3, timeout=1.0)
-    ) if asyncio.get_event_loop().is_running() else ping_host(ip)
-    dev = next((d for d in _state if d.ip == ip), None)
-    name_hint = f"  ({dev.name})" if dev else ""
-    return format_ping_output(result) + name_hint
-
-    if cmd == "show alerts":
-        if not alert_engine.alerts:
-            return "no alerts"
-        lines = []
-        for a in alert_engine.alerts[:20]:
-            lines.append(f"[{a.severity.upper():<8}] {a.message}  ({a.created_at[:19]})")
+    # top — devices ranked by CPU
+    if cmd == "top":
+        lines = [
+            f"{'DEVICE':<22} {'STATUS':<10} {'CPU':>6} {'MEM':>6} "
+            f"{'LOOPS':>6} {'FAULTS':>7}",
+            "-" * 65,
+        ]
+        for d in sorted(_state, key=lambda d: d.cpu, reverse=True):
+            lines.append(
+                f"{d.name:<22} {d.status.value:<10} {d.cpu:>5.1f}% "
+                f"{d.memory:>5.1f}% {len(d.loops):>5}  {len(d.cable_faults):>6}"
+            )
         return "\n".join(lines)
 
+    # ping — REAL ICMP
+    if head == "ping" and len(parts) > 1:
+        target = parts[1]
+        # allow pinging by device name as well as IP
+        if not target[0].isdigit():
+            dev = next(
+                (d for d in _state if d.name.lower() == target.lower()),
+                None
+            )
+            if dev:
+                target = dev.ip
+            else:
+                return f"unknown host: {target!r}  (use an IP or a device name)"
+        result = await ping_host_async(target, count=3, timeout=1.0)
+        dev = next((d for d in _state if d.ip == target), None)
+        name_hint = f"  [{dev.name}]" if dev else ""
+        return format_ping_output(result) + name_hint
+
+    # ask — route to Gemini AI
+    if head == "ask" and len(parts) > 1:
+        query = " ".join(parts[1:])
+        system = (
+            "You are an expert network operations center AI. "
+            "Be concise and technical. "
+            "Here is the current network state:\n" + _get_network_snapshot()
+        )
+        return _call_gemini(system, [{"role": "user", "content": query}])
+
+    # help
     if cmd == "help":
         return (
             "commands:\n"
@@ -274,79 +343,64 @@ def _dispatch_cli(cmd: str) -> str:
             "  show faults           — active cable/RJ45 faults\n"
             "  show alerts           — recent alert feed\n"
             "  top                   — devices ranked by CPU usage\n"
-            "  ping <ip>             — test reachability\n"
-            "  ask <question>        — ask the AI assistant\n"
+            "  ping <ip or name>     — real ICMP ping test\n"
+            "  ask <question>        — ask the Gemini AI assistant\n"
             "  help                  — this message"
         )
-
-    if head == "ask" and len(parts) > 1:
-        query = " ".join(parts[1:])
-        system = (
-            "You are an expert network operations center AI. Be concise and technical. "
-            "Here is the current network state:\n" + _get_network_snapshot()
-        )
-        return _call_gemini(system, [{"role": "user", "content": query}])
 
     return f"unknown command: {cmd!r}  (try 'help')"
 
 
-# ----------------------------- AI ASSIST --------------------------
-class AiAssistRequest(BaseModel):
-    messages: list
-    network_context: Optional[str] = ""
-
+# ----------------------------- AI Assist -------------------------
 @app.post("/api/ai-assist")
 async def ai_assist(req: dict):
     if not GEMINI_API_KEY:
-        raise HTTPException(status_code=503, detail="AI not configured. Set GEMINI_API_KEY.")
+        raise HTTPException(
+            status_code=503,
+            detail="AI not configured. Paste your Gemini key into GEMINI_API_KEY in server.py."
+        )
 
-    # 1. Safely extract the network context
     network_context = req.get("network_context", "")
     system_prompt = (
-        "You are an expert NOC AI assistant. Provide concise, technical troubleshooting advice. "
+        "You are an expert NOC AI assistant. Provide concise, technical "
+        "troubleshooting advice based on live device telemetry.\n"
         "Current network state:\n" + str(network_context)
     )
-    
-    # 2. Bulletproof message extraction (Handles both old and new frontend code)
+
+    # Build message list — handle both formats the frontend might send
     api_messages = []
-    
-    # Check if frontend sent a list of 'messages'
     if "messages" in req and isinstance(req["messages"], list):
         for msg in req["messages"]:
             if isinstance(msg, dict):
-                # Map roles correctly
-                role = "user" if msg.get("role") in ["user", "YOU"] else "model"
+                role = "user" if msg.get("role") == "user" else "model"
                 content = str(msg.get("content", "")).strip()
-                if content:  # Google rejects empty strings
+                if content:
                     api_messages.append({"role": role, "content": content})
-                    
-    # Check if frontend sent a single 'message' instead
     elif "message" in req:
         content = str(req["message"]).strip()
         if content:
             api_messages.append({"role": "user", "content": content})
 
-    # 3. Failsafe: Prevent the "400 Empty Contents" error
     if not api_messages:
-        return {"response": "System Error: The backend received an empty message from the dashboard."}
+        return {"response": "Error: received empty message."}
 
-    # 4. Google's Strict Rule: The conversation MUST start with a 'user'
-    if api_messages[0]["role"] == "model":
-        # Prepend a hidden initialization message to keep the API happy
-        api_messages.insert(0, {"role": "user", "content": "Initialize network analysis."})
-
-    # Call Gemini
     result = _call_gemini(system_prompt, api_messages)
+
+    if result.startswith("Gemini API error") or result.startswith("AI error"):
+        raise HTTPException(status_code=500, detail=result)
+
     return {"response": result}
 
 
-# ----------------------------- WebSocket --------------------------
+# ----------------------------- WebSocket ------------------------
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     _ws_clients.add(ws)
-    await ws.send_json({"type": "devices",
-                        "data": [d.model_dump() for d in _state]})
+    await ws.send_json({
+        "type": "devices",
+        "data": [d.model_dump() for d in _state]
+    })
     try:
         while True:
             await ws.receive_text()

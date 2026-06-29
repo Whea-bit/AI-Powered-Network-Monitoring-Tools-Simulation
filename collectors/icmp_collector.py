@@ -1,3 +1,16 @@
+"""
+ICMP Ping Collector — real network reachability checks.
+
+Uses icmplib to send actual ICMP Echo Requests to each device IP.
+This replaces simulator-based up/down status with real host detection.
+
+Works in WSL without root because icmplib uses unprivileged ICMP sockets
+(SOCK_DGRAM) which are available by default on Linux 3.11+.
+
+Usage in server.py:
+    from collectors.icmp_collector import ping_host, ping_all_devices
+"""
+
 from icmplib import ping as icmp_ping, SocketPermissionError
 from typing import Optional
 import asyncio
