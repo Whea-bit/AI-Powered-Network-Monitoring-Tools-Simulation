@@ -46,6 +46,13 @@ app.add_middleware(
 _state: List[Device] = []
 _ws_clients: set = set()
 
+# In-memory settings store (persists while server runs)
+_settings = {
+    "cpu_threshold": 85,
+    "mem_threshold": 90,
+    "email_enabled": False,
+    "email_address": "",
+}
 
 # ----------------------------- Gemini AI -------------------------
 def _call_gemini(system_prompt: str, messages: list) -> str:
@@ -206,11 +213,24 @@ async def get_summary():
     }
 
 
-@app.get("/api/ping/{ip}")
-async def ping_endpoint(ip: str):
-    """Real ICMP ping — callable directly from the frontend."""
-    result = await ping_host_async(ip, count=3, timeout=1.0)
-    return result
+@app.get("/api/settings")
+async def get_settings():
+    return _settings
+
+
+@app.post("/api/settings")
+async def save_settings(req: dict):
+    global _settings
+    # Update stored settings
+    _settings.update(req)
+
+    # Apply thresholds to the live alert engine immediately
+    if "cpu_threshold" in req:
+        alert_engine.cpu_threshold = float(req["cpu_threshold"])
+    if "mem_threshold" in req:
+        alert_engine.mem_threshold = float(req["mem_threshold"])
+
+    return {"status": "ok", "applied": _settings}
 
 
 # ----------------------------- CLI ------------------------------
