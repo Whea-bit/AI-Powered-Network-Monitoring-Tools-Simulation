@@ -19,8 +19,8 @@ export const NetworkProvider = ({ children }) => {
             try {
                 // fetch devices and summary together
                 const [devicesRes, summaryRes] = await Promise.all([
-                    axios.get('http://localhost:8000/api/devices'),
-                    axios.get('http://localhost:8000/api/summary'),
+                    axios.get(`http://${window.location.hostname}:8000/api/devices`),
+                    axios.get(`http://${window.location.hostname}:8000/api/summary`),
                 ]);
 
                 setDevices(devicesRes.data);

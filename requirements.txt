@@ -6,3 +6,5 @@ pydantic>=2.0
 # pysnmp>=4.4
 # netmiko>=4.0
 # requests>=2.31      # for Meraki / FortiGate REST APIs
+psycopg2-binary>=2.9
+sqlalchemy>=2.0
