@@ -20,6 +20,7 @@ class AlertEngine:
         self.email_address = email_address
         self._prev: Dict[str, Status] = {}
         self._prev_fault_counts: Dict[str, int] = {}
+        self._initialized = False
         self.alerts: List[Alert] = []
 
     def _add(self, dev: Device, severity: str, message: str) -> None:
@@ -52,7 +53,7 @@ class AlertEngine:
         for dev in devices:
             prev = self._prev.get(dev.id)
 
-            if prev is not None and prev != dev.status:
+            if self._initialized and prev is not None and prev != dev.status:
                 if dev.status == Status.OFFLINE:
                     self._add(dev, "critical",
                               f"{dev.name} went OFFLINE ({dev.ip})")
@@ -66,7 +67,7 @@ class AlertEngine:
 
             fault_total = len(dev.loops) + len(dev.cable_faults)
             prev_faults = self._prev_fault_counts.get(dev.id, 0)
-            if fault_total > prev_faults:
+            if self._initialized and fault_total > prev_faults:
                 if dev.loops:
                     self._add(dev, "critical",
                               f"LOOP detected on {dev.name}:{dev.loops[-1].port}")
@@ -75,6 +76,8 @@ class AlertEngine:
                     self._add(dev, "warning",
                               f"Cable fault {dev.name}:{cf.port} — {cf.detail}")
             self._prev_fault_counts[dev.id] = fault_total
+
+        self._initialized = True
 
     def _send_email(self, alert: Alert) -> None:
         """Send alert email in background thread."""

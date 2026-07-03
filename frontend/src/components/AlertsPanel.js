@@ -8,7 +8,7 @@ const AlertsPanel = () => {
     useEffect(() => {
         const fetchAlerts = async () => {
             try {
-                const { data } = await axios.get(`http://${window.location.hostname}:8000/api/alerts`);
+                const { data } = await axios.get('/api/alerts');
                 setAlerts(data);
                 setLoading(false);
             } catch (err) {

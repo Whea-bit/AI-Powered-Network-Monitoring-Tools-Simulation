@@ -29,7 +29,7 @@ const AiAssist = () => {
 
         try {
             // Updated to talk to your local Gemini-ready FastAPI backend
-            const res = await axios.post(`http://${window.location.hostname}:8000/api/ai-assist`, {
+            const res = await axios.post('/api/ai-assist', {
                 message: text
             });
 

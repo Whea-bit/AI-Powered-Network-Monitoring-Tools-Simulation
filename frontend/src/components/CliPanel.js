@@ -33,7 +33,7 @@ const CliPanel = () => {
 
         setIsLoading(true);
         try {
-            const res = await axios.post(`http://${window.location.hostname}:8000/api/cli`, { command: cmd });
+            const res = await axios.post('/api/cli', { command: cmd });
             setHistory((h) => [...h, { type: 'output', text: res.data.output }]);
         } catch (err) {
             setHistory((h) => [...h, { type: 'error', text: 'Error: could not reach backend. Make sure uvicorn is running.' }]);
