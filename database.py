@@ -2,26 +2,33 @@
 Database layer — PostgreSQL via Docker container (ainoc-db).
 Stores alerts, settings, and ping history persistently.
 
-Connection: postgres:password@localhost:5432/ainoc
+Connection: configured via DATABASE_URL environment variable (see .env)
 Container:  docker start ainoc-db
 """
 
+import os
 import json
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 from sqlalchemy import (
     create_engine, Column, String, Float, Boolean,
     Integer, DateTime, Text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Your Docker container credentials
-DATABASE_URL = "postgresql+psycopg2://postgres:password@localhost:5432/ainoc"
+load_dotenv()
+
+# Reads from .env; falls back to local default if not set
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql+psycopg2://postgres:password@localhost:5432/ainoc"
+)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
- 
+
 # ----------------------------- Table Models ----------------------
 class AlertRecord(Base):
     """Persistent alert history — survives server restarts."""
